@@ -78,9 +78,9 @@ FK_TABLES = {
 # ─── AUTH ───────────────────────────────────────────────────────────────────────
 
 def get_credentials():
-    """Auto-detect auth: Secret Manager on Linux, JSON file on Windows."""
+    """Auto-detect auth: try Secret Manager → default VM creds → JSON file."""
+    # 1. Try Secret Manager (GCP VM with proper scopes)
     if platform.system() != "Windows":
-        # VM path: use Secret Manager
         try:
             from google.cloud import secretmanager
             sm_client = secretmanager.SecretManagerServiceClient()
@@ -92,13 +92,33 @@ def get_credentials():
             print("[AUTH] Using Secret Manager credentials")
             return creds
         except Exception as e:
-            print(f"[AUTH] Secret Manager failed ({e}), falling back to JSON file")
+            print(f"[AUTH] Secret Manager unavailable ({type(e).__name__}), trying default credentials...")
 
-    # Local Windows path: use JSON file
-    print(f"[AUTH] Using local JSON file: {CRED_PATH}")
-    return service_account.Credentials.from_service_account_file(
-        CRED_PATH, scopes=BQ_SCOPE
-    )
+    # 2. Try VM default credentials (works on GCP VMs with BigQuery access)
+    try:
+        import google.auth
+        creds, project = google.auth.default(scopes=BQ_SCOPE)
+        if creds and creds.valid:
+            print(f"[AUTH] Using VM default credentials (project: {project})")
+            return creds
+    except Exception as e:
+        print(f"[AUTH] Default credentials unavailable ({type(e).__name__}), trying JSON file...")
+
+    # 3. Fall back to local JSON file
+    import os
+    cred_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CRED_PATH)
+    if os.path.exists(cred_path):
+        print(f"[AUTH] Using local JSON file: {cred_path}")
+        return service_account.Credentials.from_service_account_file(
+            cred_path, scopes=BQ_SCOPE
+        )
+
+    print("[AUTH] ERROR: No authentication method available!")
+    print("  - Secret Manager: not available")
+    print("  - VM default creds: not available")
+    print(f"  - JSON file not found: {cred_path}")
+    print("  Fix: Either add BigQuery scope to VM, or upload bigquery_credentials.json")
+    raise SystemExit(1)
 
 
 # ─── SHARED STATE ───────────────────────────────────────────────────────────────
