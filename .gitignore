@@ -1,0 +1,15 @@
+.env
+.powerbi_auth/
+screenshots/
+__pycache__/
+*.pyc
+
+# Credentials (never commit)
+bigquery_credentials.json
+bc_credentials.json
+facebook_credentials.json
+
+# Runtime state
+facebook_sync_state.json
+shopify_sync_state.json
+bin_cache.json
