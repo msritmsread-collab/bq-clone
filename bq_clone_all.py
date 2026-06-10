@@ -147,7 +147,7 @@ def phase1_clone():
 
     log(f"Found {len(datasets)} dataset(s) in {SOURCE_PROJECT}\n")
 
-    stats = {"datasets": 0, "tables": 0, "views": 0, "mviews": 0, "skipped_tables": 0, "errors": 0}
+    stats = {"datasets": 0, "tables": 0, "synced": 0, "views": 0, "mviews": 0, "skipped_tables": 0, "errors": 0}
 
     for src_ds_item in datasets:
         src_dataset = client.get_dataset(src_ds_item.reference)
@@ -198,11 +198,12 @@ def phase1_clone():
     log("=" * 60)
     log(f"✅ Phase 1 Done! Cloned {stats['datasets']} dataset(s):")
     log(f"   Tables:             {stats['tables']}")
+    log(f"   Synced (re-copied): {stats.get('synced', 0)}")
     log(f"   Views:              {stats['views']}")
     log(f"   Materialized Views: {stats['mviews']}")
     log(f"   External (skipped): {stats['skipped_tables']}")
     if stats["errors"]:
-        log(f"   ⚠️  Unknown types:   {stats['errors']}")
+        log(f"   ⚠️  Errors:          {stats['errors']}")
     log("=" * 60)
 
 
@@ -212,10 +213,15 @@ def _copy_table(src_table, ds_id, stats):
         bigquery.DatasetReference(DEST_PROJECT, ds_id), src_table.table_id
     )
     try:
-        dest_client.get_table(dest_ref)
-        log(f"    ⏭️  Table already exists: {src_table.table_id}")
-        stats["tables"] += 1
-        return
+        existing = dest_client.get_table(dest_ref)
+        if SYNC:
+            log(f"    🔄 Sync: re-copying {src_table.table_id} ({existing.num_rows:,} rows)...")
+            dest_client.delete_table(dest_ref)
+            stats["synced"] = stats.get("synced", 0) + 1
+        else:
+            log(f"    ⏭️  Table already exists: {src_table.table_id}")
+            stats["tables"] += 1
+            return
     except NotFound:
         pass
 
@@ -267,9 +273,13 @@ def _recreate_materialized_view(src_table, ds_id, stats):
     )
     try:
         dest_client.get_table(dest_ref)
-        log(f"    ⏭️  Materialized view already exists: {src_table.table_id}")
-        stats["mviews"] += 1
-        return
+        if SYNC:
+            log(f"    🔄 Sync: recreating MV {src_table.table_id}...")
+            dest_client.delete_table(dest_ref)
+        else:
+            log(f"    ⏭️  Materialized view already exists: {src_table.table_id}")
+            stats["mviews"] += 1
+            return
     except NotFound:
         pass
 
@@ -325,9 +335,12 @@ def phase2_fk_fixes():
             try:
                 existing = dest_client.get_table(dest_ref)
                 if existing.num_rows and existing.num_rows > 0:
-                    log(f"    ⏭️  Already exists: {table_id} ({existing.num_rows:,} rows)")
-                    success += 1
-                    continue
+                    if SYNC:
+                        log(f"    🔄 Sync: re-copying {table_id} ({existing.num_rows:,} rows)...")
+                    else:
+                        log(f"    ⏭️  Already exists: {table_id} ({existing.num_rows:,} rows)")
+                        success += 1
+                        continue
             except NotFound:
                 pass
 
@@ -495,23 +508,34 @@ def phase4_products():
 
 # ─── MAIN ──────────────────────────────────────────────────────────────────────
 
+# ─── SYNC MODE ──────────────────────────────────────────────────────────────────
+SYNC = False  # Set to True when --sync is used
+
+
 def main():
+    global SYNC
+
     parser = argparse.ArgumentParser(description="BigQuery Project Cloner — All-in-One")
     parser.add_argument("--all", action="store_true", help="Run all phases (1-4)")
     parser.add_argument("--clone", action="store_true", help="Phase 1: Full project clone")
     parser.add_argument("--fk", action="store_true", help="Phase 2: Fix FK-constraint tables")
     parser.add_argument("--views", action="store_true", help="Phase 3: Recreate all views")
     parser.add_argument("--products", action="store_true", help="Phase 4: msread_products")
+    parser.add_argument("--sync", action="store_true", help="Sync mode: re-copy data for existing tables")
     args = parser.parse_args()
 
     if not any([args.all, args.clone, args.fk, args.views, args.products]):
         parser.print_help()
         print("\nExample: python bq_clone_all.py --all")
+        print("         python bq_clone_all.py --all --sync")
         return
+
+    SYNC = args.sync
 
     log(f"🚀 BigQuery Project Cloner")
     log(f"   {SOURCE_PROJECT} → {DEST_PROJECT}")
     log(f"   Auth: {'Secret Manager' if platform.system() != 'Windows' else 'JSON file'}")
+    log(f"   Mode: {'SYNC (re-copy all data)' if SYNC else 'INCREMENTAL (skip existing)'}")
     log("")
 
     if args.all or args.clone:
